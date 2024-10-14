@@ -1,0 +1,186 @@
+---
+- name: Palo Alto Initial Configuration
+  hosts: localhost
+  connection: local
+
+  vars:
+    primary:
+      ip_address: "xxxxxx"
+      username: "protera"
+      password: "xxxxxx"
+      
+    secondary:
+      ip_address: "xxxxxx"
+      username: "protera"
+      password: "xxxxxx"
+      
+    version: "x.x.x.x"
+    backup_filename: "primary-backup.xml"
+
+  collections:
+    - paloaltonetworks.panos
+
+  tasks:
+    - name: Gather facts for primary device
+      paloaltonetworks.panos.panos_facts:
+        provider: "{{ primary }}"
+      register: panos_facts
+
+    - name: Debug gathered PAN-OS facts
+      ansible.builtin.debug:
+        var: panos_facts
+
+    - name: Extract current PAN-OS version
+      set_fact:
+        current_version: "{{ panos_facts.ansible_facts.ansible_net_version }}"
+      when: 
+        - panos_facts is defined 
+        - "'ansible_facts' in panos_facts and 'ansible_net_version' in panos_facts.ansible_facts"
+
+    - name: Set current major.minor version
+      set_fact:
+        current_major_minor_version: "{{ (current_version.split('.')[0:2] | join('.')) + '.0' }}"
+      when: current_version is defined
+
+    - name: Check current version
+      debug:
+        msg: "Current PAN-OS Version: {{ current_version }} and Major Version: {{ current_major_minor_version }}"
+      when: current_major_minor_version is defined
+
+    - name: Extract target PAN-OS major.minor version
+      set_fact:
+        target_major_minor_version: "{{ (version.split('.')[0:2] | join('.')) + '.0' }}"
+
+    - name: Compare current and target major.minor versions
+      debug:
+        msg: "Current major.minor version is {{ current_major_minor_version }} and target major.minor version is {{ target_major_minor_version }}"
+      when: current_major_minor_version is defined and target_major_minor_version is defined
+
+    - name: Conditionally take action based on major.minor version comparison
+      debug:
+        msg: "Versions are compatible. No upgrade needed."
+      when: current_major_minor_version is defined and current_major_minor_version == target_major_minor_version
+
+    - name: Take action if versions differ
+      debug:
+        msg: "Major.Minor versions differ. Upgrade may be required."
+      when: current_major_minor_version is defined and current_major_minor_version != target_major_minor_version
+      
+    - name: Conditionally download target PAN-OS major version if different
+      paloaltonetworks.panos.panos_software:
+        provider: '{{ primary }}'
+        version: '{{ target_major_minor_version }}'
+        download: true
+        sync_to_peer: true
+        install: false
+      when: current_major_minor_version != target_major_minor_version
+    
+
+    - name: Download target PAN-OS Minor
+      paloaltonetworks.panos.panos_software:
+        provider: '{{ primary }}'
+        version: '{{ version }}'
+        download: true
+        sync_to_peer: true
+        install: false
+        
+    - name: Suspend primary device
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ primary }}'
+        cmd: 'request high-availability state suspend'
+        
+    - name: Check that secondary is now active
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ secondary }}'
+        cmd: 'show high-availability state'
+      register: secondary_active
+      retries: 10
+      delay: 30
+      until: ( secondary_active.stdout | from_json).response.result.group["local-info"].state == 'active' and
+             ( secondary_active.stdout | from_json).response.result.group["peer-info"].state == 'suspended' and
+             ( secondary_active.stdout | from_json).response.result.group["peer-info"]["state-reason"] == 'User requested'
+             
+    - name: Install target PAN-OS version and restart (primary)
+      paloaltonetworks.panos.panos_software:
+        provider: '{{ primary }}'
+        version: '{{ version }}'
+        download: false
+        restart: true
+        
+    - name: Pause for restart
+      ansible.builtin.pause:
+        seconds: 30
+    
+    - name: Chassis ready (primary)
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ primary }}'
+        cmd: 'show chassis-ready'
+      changed_when: false
+      register: result
+      until: result is not failed and (result.stdout | from_json).response.result == 'yes'
+      retries: 30
+      delay: 60
+      
+    - name: State sync check (primary)
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ primary }}'
+        cmd: 'show high-availability state'
+      register: primary_state_sync
+      retries: 10
+      delay: 30
+      until: '"state" in ( primary_state_sync.stdout | from_json).response.result.group["local-info"] and
+             ( primary_state_sync.stdout | from_json).response.result.group["local-info"].state == "passive" and
+             ( primary_state_sync.stdout | from_json).response.result.group["local-info"]["state-sync"] == "Complete"'
+             
+    - name: Pause for verification
+      ansible.builtin.pause:
+        prompt: 'Primary upgrade complete.  Pausing for verification.'
+        
+        
+    - name: Suspend secondary device
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ secondary }}'
+        cmd: 'request high-availability state suspend'
+
+    - name: Check that primary is now active
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ primary }}'
+        cmd: 'show high-availability state'
+      register: primary_active
+      retries: 10
+      delay: 30
+      until: ( primary_active.stdout | from_json).response.result.group["local-info"].state == 'active' and
+             ( primary_active.stdout | from_json).response.result.group["peer-info"].state == 'suspended' and
+             ( primary_active.stdout | from_json).response.result.group["peer-info"]["state-reason"] == 'User requested'
+
+    - name: Install target PAN-OS version and restart (secondary)
+      paloaltonetworks.panos.panos_software:
+        provider: '{{ secondary }}'
+        version: '{{ version }}'
+        download: false
+        restart: true
+
+    - name: Pause for restart
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Chassis ready (secondary)
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ secondary }}'
+        cmd: 'show chassis-ready'
+      changed_when: false
+      register: result
+      until: result is not failed and (result.stdout | from_json).response.result == 'yes'
+      retries: 30
+      delay: 60
+
+    - name: State sync check (secondary)
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ secondary }}'
+        cmd: 'show high-availability state'
+      register: secondary_state_sync
+      retries: 10
+      delay: 30
+      until: '"state" in ( secondary_state_sync.stdout | from_json).response.result.group["local-info"] and
+             ( secondary_state_sync.stdout | from_json).response.result.group["local-info"].state == "passive" and
+             ( secondary_state_sync.stdout | from_json).response.result.group["local-info"]["state-sync"] == "Complete"'

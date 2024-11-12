@@ -1,186 +1,368 @@
 ---
 - name: Palo Alto Initial Configuration
-  hosts: localhost
+  hosts: firewalls
   connection: local
 
+#Variables will be adjusted based on how Rundeck will work
   vars:
-    primary:
-      ip_address: "xxxxxx"
-      username: "protera"
-      password: "xxxxxx"
-      
-    secondary:
-      ip_address: "xxxxxx"
-      username: "protera"
-      password: "xxxxxx"
-      
-    version: "x.x.x.x"
-    backup_filename: "primary-backup.xml"
+    master_key: "{{ master_key1 }}"
+    auth_code: "{{ auth_code1 }}"
+    version: "{{ version1 }}"
+    admin_pass: "{{ admin_pass1 }}"
+    device:
+      ip_address: "{{ ip_address }}"
+      username: "{{ username }}"
+      password: "{{ password }}"
 
   collections:
     - paloaltonetworks.panos
 
   tasks:
-    - name: Gather facts for primary device
+# Gather facts from Palo using the panos.op (CLI and module)
+    - name: Gather facts for device
       paloaltonetworks.panos.panos_facts:
-        provider: "{{ primary }}"
+        provider: "{{ device }}"
       register: panos_facts
-
-    - name: Debug gathered PAN-OS facts
+        
+    - name: Execute 'show system info' to get VM mode
+      paloaltonetworks.panos.panos_op:
+        provider: "{{ device }}"
+        cmd: "show system info"
+      register: system_info
+      
+# Make the raw data from show system info in JSON to take info
+    - name: Parse system info as JSON
+      set_fact:
+        parsed_system_info: "{{ system_info.stdout | from_json }}"
+# Take vm-mode to recognise the Cloud Hypervisonr (for now only AWS and Azure)
+    - name: Extract VM Mode
+      set_fact:
+        vm_mode: "{{ parsed_system_info.response.result.system['vm-mode'] }}"
+        vm_version: "{{ parsed_system_info.response.result.system['sw-version'] }}"
+      
+    - name: System Info
       ansible.builtin.debug:
-        var: panos_facts
+        msg: "That is a/an {{ vm_mode }} deployment in Version: {{ vm_version }}"
+# Use auth code to activate
+    - name: Activate my authcode
+      paloaltonetworks.panos.panos_lic:
+        provider: "{{ device }}"
+        auth_code: "{{ auth_code }}"
+      register: result
+      ignore_errors: true
 
+    - name: Wait for FW reboot
+      paloaltonetworks.panos.panos_check:
+        provider: "{{ device }}"
+        initial_delay: 120
+        interval: 5
+        timeout: 600
+
+# Get Palo Alto API Key
+
+    - name: retrieve api_key
+      paloaltonetworks.panos.panos_api_key:
+        provider: '{{ device }}'
+      register: auth
+
+    - name: Save API to variable
+      set_fact:
+        api_key: "{{ auth.api_key }}"
+
+#Imput Master Key
+
+    - name: Set new master key using API
+      uri:
+        url: "https://{{ device.ip_address }}/api/?type=op&cmd=<request><master-key><reminder>8760</reminder><new-master-key>{{ master_key }}</new-master-key><lifetime>438000</lifetime></master-key></request>&key={{ api_key }}"
+        method: GET
+        validate_certs: no
+      register: result
+
+    - debug:
+        var: result
+
+    - name: Wait for Auto-Commit to complete
+      pause:
+        seconds: 40
+
+# Hostname and Panorama config
+
+    - name: Set new hostname
+      paloaltonetworks.panos.panos_mgtconfig:
+        provider: '{{ device }}'
+        hostname: '{{ hostname }}'
+        panorama_primary: "100.70.0.20"
+        commit: true
+# Disable Telemetry using xpath and in-Ansible API (unlocked)
+    - name: Disable Telemetry
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/device-telemetry
+        element: |
+          <device-health-performance>no</device-health-performance>
+          <product-usage>no</product-usage>
+          <threat-prevention>no</threat-prevention>
+          
+    - name: Commit changes
+      paloaltonetworks.panos.panos_commit_firewall:
+        provider: '{{ device }}'
+        
+#Dynamic Updates and schedules        
+    - name: Update Application and Threats
+      paloaltonetworks.panos.panos_dynamic_updates:
+        provider: '{{ device }}'
+
+    - name: Check Antivirus Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request anti-virus upgrade check'
+
+    - name: Download Antivirus Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request anti-virus upgrade download latest'
+
+    - name: Wait for AV Definitions Download
+      pause:
+        seconds: 40
+
+    - name: Update Antivirus Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request anti-virus upgrade install version latest'
+
+    - name: Check WildFire Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request wildfire upgrade check'
+
+    - name: Download WildFire Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request wildfire upgrade download latest'
+
+    - name: Wait for WildFire Definitions Download
+      pause:
+        seconds: 40
+
+    - name: Update WildFire Definitions
+      paloaltonetworks.panos.panos_op:
+        provider: '{{ device }}'
+        cmd: 'request wildfire upgrade install version latest'
+
+    - name: Schedule AV Updates
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/update-schedule/threats/recurring/daily
+        element: |
+          <at>00:15</at>
+          <action>download-and-install</action>
+
+    - name: Schedule Application-Threats Updates
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/update-schedule/anti-virus/recurring/daily
+        element: |
+          <at>00:00</at>
+          <action>download-and-install</action>
+
+    - name: Schedule WildFire Updates
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/system/update-schedule/wildfire
+        element: |
+          <recurring><real-time/></recurring>
+
+    - name: Commit changes
+      paloaltonetworks.panos.panos_commit_firewall:
+        provider: '{{ device }}'
+        
+#Check version to take major and Minor for PanOS software Update          
     - name: Extract current PAN-OS version
       set_fact:
         current_version: "{{ panos_facts.ansible_facts.ansible_net_version }}"
       when: 
         - panos_facts is defined 
         - "'ansible_facts' in panos_facts and 'ansible_net_version' in panos_facts.ansible_facts"
-
-    - name: Set current major.minor version
+        
+    - name: Set current Major (Base) Version
       set_fact:
-        current_major_minor_version: "{{ (current_version.split('.')[0:2] | join('.')) + '.0' }}"
+        current_major_version: "{{ (current_version.split('.')[0:2] | join('.')) + '.0' }}"
       when: current_version is defined
-
+      
     - name: Check current version
       debug:
-        msg: "Current PAN-OS Version: {{ current_version }} and Major Version: {{ current_major_minor_version }}"
-      when: current_major_minor_version is defined
-
-    - name: Extract target PAN-OS major.minor version
+        msg: "Current PAN-OS Version: {{ current_version }} and Major Version: {{ current_major_version }}"
+      when: current_major_version is defined
+      
+    - name: Extract target PAN-OS major version
       set_fact:
-        target_major_minor_version: "{{ (version.split('.')[0:2] | join('.')) + '.0' }}"
-
-    - name: Compare current and target major.minor versions
+        target_major_version: "{{ (version.split('.')[0:2] | join('.')) + '.0' }}"
+        
+# Determine if major update needs to be downloaded as step        
+    - name: Compare current and target major versions
       debug:
-        msg: "Current major.minor version is {{ current_major_minor_version }} and target major.minor version is {{ target_major_minor_version }}"
-      when: current_major_minor_version is defined and target_major_minor_version is defined
-
-    - name: Conditionally take action based on major.minor version comparison
+        msg: "Current major version is {{ current_major_version }} and target major version is {{ target_major_version }}"
+      when: current_major_version is defined and target_major_version is defined
+      
+    - name: Conditionally take action based on major version comparison
       debug:
         msg: "Versions are compatible. No upgrade needed."
-      when: current_major_minor_version is defined and current_major_minor_version == target_major_minor_version
+      when: current_major_version is defined and current_major_version == target_major_version
 
     - name: Take action if versions differ
       debug:
-        msg: "Major.Minor versions differ. Upgrade may be required."
-      when: current_major_minor_version is defined and current_major_minor_version != target_major_minor_version
+        msg: "Major versions differ. Upgrade may be required."
+      when: current_major_version is defined and current_major_version != target_major_version
       
     - name: Conditionally download target PAN-OS major version if different
       paloaltonetworks.panos.panos_software:
-        provider: '{{ primary }}'
-        version: '{{ target_major_minor_version }}'
+        provider: '{{ device }}'
+        version: '{{ target_major_version }}'
         download: true
-        sync_to_peer: true
         install: false
-      when: current_major_minor_version != target_major_minor_version
+      when: current_major_version != target_major_version
     
 
     - name: Download target PAN-OS Minor
       paloaltonetworks.panos.panos_software:
-        provider: '{{ primary }}'
+        provider: '{{ device }}'
         version: '{{ version }}'
         download: true
-        sync_to_peer: true
         install: false
+
+    - name: Wait for FW 
+      paloaltonetworks.panos.panos_check:
+        provider: "{{ device }}"
+        initial_delay: 120
+        interval: 5
+        timeout: 600
         
-    - name: Suspend primary device
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ primary }}'
-        cmd: 'request high-availability state suspend'
-        
-    - name: Check that secondary is now active
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ secondary }}'
-        cmd: 'show high-availability state'
-      register: secondary_active
-      retries: 10
-      delay: 30
-      until: ( secondary_active.stdout | from_json).response.result.group["local-info"].state == 'active' and
-             ( secondary_active.stdout | from_json).response.result.group["peer-info"].state == 'suspended' and
-             ( secondary_active.stdout | from_json).response.result.group["peer-info"]["state-reason"] == 'User requested'
-             
-    - name: Install target PAN-OS version and restart (primary)
+    - name: Install target PAN-OS Minor
       paloaltonetworks.panos.panos_software:
-        provider: '{{ primary }}'
+        provider: '{{ device }}'
         version: '{{ version }}'
         download: false
+        install: true
         restart: true
+        perform_software_check: false
         
-    - name: Pause for restart
-      ansible.builtin.pause:
-        seconds: 30
+    - name: Wait for FW reboot
+      paloaltonetworks.panos.panos_check:
+        provider: "{{ device }}"
+        initial_delay: 120
+        interval: 5
+        timeout: 600
     
-    - name: Chassis ready (primary)
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ primary }}'
-        cmd: 'show chassis-ready'
-      changed_when: false
-      register: result
-      until: result is not failed and (result.stdout | from_json).response.result == 'yes'
-      retries: 30
-      delay: 60
+# Default RT to facilitate Python code for Panorama to run and push Device Group/Template config
+
+    - name: Delete Default RT
+      paloaltonetworks.panos.panos_virtual_router:
+        provider: '{{ device }}'
+        name: default
+        state: absent
+        
+# HA A-A Cluster creation
+    - name: Enable HA Interface Azure
+      paloaltonetworks.panos.panos_interface:
+        provider: '{{ device }}'
+        if_name: 'ethernet1/3'
+        mode: ha
+      when: vm_mode == "Microsoft Azure"
       
-    - name: State sync check (primary)
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ primary }}'
-        cmd: 'show high-availability state'
-      register: primary_state_sync
-      retries: 10
-      delay: 30
-      until: '"state" in ( primary_state_sync.stdout | from_json).response.result.group["local-info"] and
-             ( primary_state_sync.stdout | from_json).response.result.group["local-info"].state == "passive" and
-             ( primary_state_sync.stdout | from_json).response.result.group["local-info"]["state-sync"] == "Complete"'
-             
-    - name: Pause for verification
-      ansible.builtin.pause:
-        prompt: 'Primary upgrade complete.  Pausing for verification.'
-        
-        
-    - name: Suspend secondary device
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ secondary }}'
-        cmd: 'request high-availability state suspend'
+    - name: Enable HA Interface AWS
+      paloaltonetworks.panos.panos_interface:
+        provider: '{{ device }}'
+        if_name: 'ethernet1/1'
+        mode: ha
+      when: vm_mode == "AWS"
 
-    - name: Check that primary is now active
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ primary }}'
-        cmd: 'show high-availability state'
-      register: primary_active
-      retries: 10
-      delay: 30
-      until: ( primary_active.stdout | from_json).response.result.group["local-info"].state == 'active' and
-             ( primary_active.stdout | from_json).response.result.group["peer-info"].state == 'suspended' and
-             ( primary_active.stdout | from_json).response.result.group["peer-info"]["state-reason"] == 'User requested'
+    - name: Commit changes
+      paloaltonetworks.panos.panos_commit_firewall:
+        provider: '{{ device }}'
 
-    - name: Install target PAN-OS version and restart (secondary)
-      paloaltonetworks.panos.panos_software:
-        provider: '{{ secondary }}'
-        version: '{{ version }}'
-        download: false
-        restart: true
+    - name: Set Preemptive to NO
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability/group
+        element: |
+          <election-option><preemptive>NO</preemptive></election-option>
 
-    - name: Pause for restart
-      ansible.builtin.pause:
-        seconds: 30
+    - name: Enable HA1 - Active Passive
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability
+        element: |
+          <enabled>yes</enabled>
 
-    - name: Chassis ready (secondary)
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ secondary }}'
-        cmd: 'show chassis-ready'
-      changed_when: false
-      register: result
-      until: result is not failed and (result.stdout | from_json).response.result == 'yes'
-      retries: 30
-      delay: 60
+    - name: Set HA peer IP
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability/group
+        element: |
+          <group-id>1</group-id>
+          <peer-ip>{{ ha_peer_mgmt2 }}</peer-ip>
 
-    - name: State sync check (secondary)
-      paloaltonetworks.panos.panos_op:
-        provider: '{{ secondary }}'
-        cmd: 'show high-availability state'
-      register: secondary_state_sync
-      retries: 10
-      delay: 30
-      until: '"state" in ( secondary_state_sync.stdout | from_json).response.result.group["local-info"] and
-             ( secondary_state_sync.stdout | from_json).response.result.group["local-info"].state == "passive" and
-             ( secondary_state_sync.stdout | from_json).response.result.group["local-info"]["state-sync"] == "Complete"'
+    - name: Set Device Priority
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability/group
+        element: |
+          <election-option><device-priority>{{ dev_priority }}</device-priority></election-option>
+
+    - name: Set HA2 - Azure
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability/interface
+        element: |
+          <ha1><port>management</port></ha1>
+          <ha2><port>ethernet1/3</port></ha2>
+          <ha2><ip-address>{{ ha_int_ip }}</ip-address></ha2>
+          <ha2><netmask>255.255.255.240</netmask></ha2>
+      when: vm_mode == "Microsoft Azure"
+          
+    - name: Set HA2 - AWS
+      paloaltonetworks.panos.panos_type_cmd:
+        provider: '{{ device }}'
+        cmd: "set"
+        xpath: |
+          /config/devices/entry[@name='localhost.localdomain']
+          /deviceconfig/high-availability/interface
+        element: |
+          <ha1><port>management</port></ha1>
+          <ha2><port>ethernet1/1</port></ha2>
+          <ha2><ip-address>{{ ha_int_ip }}</ip-address></ha2>
+          <ha2><netmask>255.255.255.240</netmask></ha2>
+      when: vm_mode == "AWS"
+
+    - name: Commit changes
+      paloaltonetworks.panos.panos_commit_firewall:
+        provider: '{{ device }}'
+

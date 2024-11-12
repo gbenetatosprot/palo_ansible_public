@@ -74,7 +74,7 @@ if [ "$cluster" = "1" ]; then
     read -p "Give HA IP for Firewall2: " firewall2_ha_ip
     read -p "Give temp password for Firewalls: " temp_pass
     read -p "Give required software version: " soft_version
-	read -p "Provide the Master Key: " master_key1
+    read -p "Provide the Master Key: " master_key
     read -p "Give auth code: " auth_code
 
     cat <<E0F  >$output_file_1
@@ -88,8 +88,8 @@ ha_peer_mgmt2: "$firewall2_mgmt_ip"
 ha_int_ip: "$firewall1_ha_ip"
 dev_priority: 90
 version1: "$soft_version"
-admin_pass1: "$admin_pass"
 auth_code1: "$auth_code"
+master_key1: "$master_key"
 E0F
     cat <<E0F  >$output_file_2
 ---
@@ -102,8 +102,8 @@ ha_peer_mgmt2: "$firewall1_mgmt_ip"
 ha_int_ip: "$firewall2_ha_ip"
 dev_priority: 100
 version1: "$soft_version"
-admin_pass1: "$admin_pass"
 auth_code1: "$auth_code"
+master_key1: "$master_key"
 E0F
 else
     read -p "Give hostname for Firewall1: " firewall1_name
@@ -111,7 +111,7 @@ else
     read -p "Give HA IP for Firewall1: " firewall1_ha_ip
     read -p "Give temp password for Firewalls: " temp_pass
     read -p "Give required software version: " soft_version
-	read -p "Provide the Master Key: " master_key1
+    read -p "Provide the Master Key: " master_key
     read -p "Give auth code: " auth_code
 
 
@@ -125,7 +125,7 @@ ha_peer_mgmt: "$firewall1_mgmt_ip"
 ha_int_ip: "$firewall1_ha_ip"
 dev_priority: 90
 version1: "$version"
-admin_pass1: "$admin_pass"
+master_key1: "$master_key"
 auth_code1: "$auth_code"
 E0F
 fi

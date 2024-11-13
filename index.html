@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palo Alto Configuration</title>
+    <script>
+        function toggleClusterFields() {
+            const isClustered = document.getElementById('cluster').value === 'True';
+            document.getElementById('firewall2_ip_field').style.display = isClustered ? 'block' : 'none';
+            document.getElementById('firewall2_name_field').style.display = isClustered ? 'block' : 'none';
+            document.getElementById('firewall2_mgmt_ip_field').style.display = isClustered ? 'block' : 'none';
+            document.getElementById('firewall2_ha_ip_field').style.display = isClustered ? 'block' : 'none';
+        }
+    </script>
+</head>
+<body>
+    <h2>Palo Alto Configuration</h2>
+    <form method="POST" action="/save_config">
+        <label for="project">Project Name/Number:</label>
+        <input type="text" id="project" name="project" required><br><br>
+
+        <label for="firewall1_ip">Firewall 1 IP:</label>
+        <input type="text" id="firewall1_ip" name="firewall1_ip" required><br><br>
+
+        <label for="firewall1_name">Firewall 1 Hostname:</label>
+        <input type="text" id="firewall1_name" name="firewall1_name" required><br><br>
+
+        <label for="firewall1_mgmt_ip">Firewall 1 Management IP:</label>
+        <input type="text" id="firewall1_mgmt_ip" name="firewall1_mgmt_ip" required><br><br>
+
+        <label for="firewall1_ha_ip">Firewall 1 HA IP:</label>
+        <input type="text" id="firewall1_ha_ip" name="firewall1_ha_ip" required><br><br>
+
+        <label for="temp_pass">Temporary Password:</label>
+        <input type="password" id="temp_pass" name="temp_pass" required><br><br>
+
+        <label for="soft_version">Software Version:</label>
+        <input type="text" id="soft_version" name="soft_version" required><br><br>
+
+        <label for="master_key">Master Key:</label>
+        <input type="password" id="master_key" name="master_key" required><br><br>
+
+        <label for="auth_code">Auth Code:</label>
+        <input type="text" id="auth_code" name="auth_code" required><br><br>
+
+        <label for="cluster">Is it a cluster? (True/False):</label>
+        <select id="cluster" name="cluster" onchange="toggleClusterFields()" required>
+            <option value="False">False (Single Firewall)</option>
+            <option value="True">True (Clustered Setup)</option>
+        </select><br><br>
+
+        <!-- Cluster-specific fields (hidden by default) -->
+        <div id="firewall2_ip_field" style="display: none;">
+            <label for="firewall2_ip">Firewall 2 IP:</label>
+            <input type="text" id="firewall2_ip" name="firewall2_ip"><br><br>
+        </div>
+        
+        <div id="firewall2_name_field" style="display: none;">
+            <label for="firewall2_name">Firewall 2 Hostname:</label>
+            <input type="text" id="firewall2_name" name="firewall2_name"><br><br>
+        </div>
+        
+        <div id="firewall2_mgmt_ip_field" style="display: none;">
+            <label for="firewall2_mgmt_ip">Firewall 2 Management IP:</label>
+            <input type="text" id="firewall2_mgmt_ip" name="firewall2_mgmt_ip"><br><br>
+        </div>
+        
+        <div id="firewall2_ha_ip_field" style="display: none;">
+            <label for="firewall2_ha_ip">Firewall 2 HA IP:</label>
+            <input type="text" id="firewall2_ha_ip" name="firewall2_ha_ip"><br><br>
+        </div>
+
+        <label for="vers_upgrade">Version Upgrade (1:YES 2:NO):</label>
+        <input type="text" id="vers_upgrade" name="vers_upgrade" required><br><br>
+
+        <input type="submit" value="Submit">
+    </form>
+</body>
+</html>

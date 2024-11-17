@@ -52,9 +52,13 @@ def save_config():
         f1.write(f"password: {temp_pass}\n")
         f1.write(f"hostname: {firewall1_name}\n")
         f1.write(f"ha_peer_mgmt: {firewall1_mgmt_ip}\n")
-        f1.write(f"ha_int_ip: {firewall1_ha_ip}\n")
+        if firewall2_mgmt_ip.strip():
+            f1.write(f"ha_peer_mgmt2: {firewall2_mgmt_ip}\n")
+        if firewall1_ha_ip.strip():
+            f1.write(f"ha_int_ip: {firewall1_ha_ip}\n")
+        if soft_version.strip():
+            f1.write(f"version1: {soft_version}\n")       
         f1.write(f"dev_priority: 90\n")
-        f1.write(f"version1: {soft_version}\n")
         f1.write(f"auth_code1: {auth_code}\n")
         f1.write(f"master_key1: {master_key}\n")
     
@@ -67,6 +71,7 @@ def save_config():
             f2.write(f"password: {temp_pass}\n")
             f2.write(f"hostname: {firewall2_name}\n")
             f2.write(f"ha_peer_mgmt: {firewall2_mgmt_ip}\n")
+            f2.write(f"ha_peer_mgmt2: {firewall1_mgmt_ip}\n")
             f2.write(f"ha_int_ip: {firewall2_ha_ip}\n")
             f2.write(f"dev_priority: 100\n")
             f2.write(f"version1: {soft_version}\n")
